@@ -1,0 +1,9 @@
+{
+  "name": "wattx-utxo-api",
+  "version": "0.1.0",
+  "description": "WATTx UTXO/ordinals indexer API — address UTXOs, balances, broadcast, inscription content. Powers the WATTx wallet extension and invoice-based ordinal minting.",
+  "type": "module",
+  "main": "server.js",
+  "scripts": { "start": "node server.js" },
+  "dependencies": { "express": "^4.19.2" }
+}
