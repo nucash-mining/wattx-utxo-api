@@ -48,6 +48,49 @@ async function scanAddress(addr) {
   return utxos;
 }
 
+// ---- inscription indexer ----
+// Scans blocks for ord reveals (a vin[0] witness carrying an "ord" envelope) and
+// keeps a light in-memory index so the marketplace can LIST ordinals. Young chain,
+// so a full scan on boot is fine; then it follows the tip.
+const inscriptions = [];               // newest-first: {id, height, contentType, address, time}
+const seen = new Set();
+let indexedHeight = 0;
+
+function scanTxForInscription(tx, height, time) {
+  const vin = tx.vin && tx.vin[0];
+  const wit = vin && vin.txinwitness;
+  if (!wit || wit.length < 2) return;
+  const script = Buffer.from(wit[1], 'hex');
+  const i = script.indexOf(Buffer.from('ord'));
+  if (i < 0) return;
+  const id = tx.txid + 'i0';
+  if (seen.has(id)) return;
+  seen.add(id);
+  let contentType = 'application/octet-stream';
+  try { contentType = parseEnvelope(script, i + 3).contentType || contentType; } catch {}
+  const address = (tx.vout[0] && tx.vout[0].scriptPubKey && tx.vout[0].scriptPubKey.address) || null;
+  inscriptions.unshift({ id, height, contentType, address, time });
+}
+
+async function indexFrom(start, tip) {
+  for (let h = start; h <= tip; h++) {
+    try {
+      const block = await rpc('getblock', [await rpc('getblockhash', [h]), 2]);
+      for (const tx of block.tx) scanTxForInscription(tx, h, block.time);
+      indexedHeight = h;
+    } catch { /* skip */ }
+  }
+}
+const SCAN_WINDOW = parseInt(process.env.SCAN_WINDOW || '1500'); // blocks to scan on boot
+async function indexer() {
+  try {
+    const tip = await rpc('getblockcount');
+    if (indexedHeight === 0) indexedHeight = Math.max(0, tip - SCAN_WINDOW); // don't rescan genesis each boot
+    if (tip > indexedHeight) await indexFrom(indexedHeight + 1, tip);
+  } catch {}
+  setTimeout(indexer, 15000);
+}
+
 // ---- API ----
 const app = express();
 app.use(express.json({ limit: '4mb' })); // inscriptions can be large
@@ -64,6 +107,11 @@ const ADDR = /^(wx1[a-z0-9]{20,90}|[W][1-9A-HJ-NP-Za-km-z]{25,40})$/; // WATTx b
 app.get('/health', async (_, res) => {
   try { res.json({ ok: true, height: await rpc('getblockcount'), chain: 'wattx', rpc: RPC_URL }); }
   catch (e) { res.status(502).json({ ok: false, error: e.message }); }
+});
+
+app.get('/inscriptions', (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit) || 60, 200);
+  res.json({ total: inscriptions.length, indexedHeight, items: inscriptions.slice(0, limit) });
 });
 
 app.get('/address/:addr/utxo', async (req, res) => {
@@ -143,4 +191,7 @@ function parseEnvelope(buf, p) {
 }
 
 const PORT = process.env.PORT || 3600;
-app.listen(PORT, '127.0.0.1', () => console.log(`wattx-utxo-api on :${PORT} → ${RPC_URL}`));
+app.listen(PORT, '127.0.0.1', () => {
+  console.log(`wattx-utxo-api on :${PORT} → ${RPC_URL}`);
+  indexer(); // start scanning blocks for ordinals
+});
