@@ -114,6 +114,25 @@ app.get('/inscriptions', (req, res) => {
   res.json({ total: inscriptions.length, indexedHeight, items: inscriptions.slice(0, limit) });
 });
 
+// Rich ordinals index (ownership + transfer tracking) — proxied from the
+// wtx-ordinals indexer (pm2 wtx-ordinals-indexer, :3012), which follows each
+// inscription's outpoint as it moves between wallets.
+const ORD_INDEXER = process.env.ORD_INDEXER || 'http://127.0.0.1:3012';
+async function ordProxy(res, p, raw) {
+  try {
+    const r = await fetch(ORD_INDEXER + p);
+    if (raw) {
+      res.status(r.status).set('content-type', r.headers.get('content-type') || 'application/octet-stream');
+      res.send(Buffer.from(await r.arrayBuffer()));
+    } else res.status(r.status).json(await r.json());
+  } catch { res.status(502).json({ error: 'ordinals indexer unavailable' }); }
+}
+app.get('/ord/inscriptions', (_, res) => ordProxy(res, '/api/inscriptions'));
+app.get('/ord/inscription/:id', (req, res) => ordProxy(res, '/api/inscription/' + encodeURIComponent(req.params.id)));
+app.get('/ord/address/:addr', (req, res) => ordProxy(res, '/api/address/' + encodeURIComponent(req.params.addr)));
+app.get('/ord/content/:id', (req, res) => ordProxy(res, '/content/' + encodeURIComponent(req.params.id), true));
+app.get('/ord/status', (_, res) => ordProxy(res, '/api/status'));
+
 app.get('/address/:addr/utxo', async (req, res) => {
   const { addr } = req.params;
   if (!ADDR.test(addr)) return res.status(400).json({ error: 'invalid WATTx address' });
